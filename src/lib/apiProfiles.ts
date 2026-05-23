@@ -710,18 +710,83 @@ export function mergeImportedSettings(currentSettings: Partial<AppSettings> | un
   })
 }
 
+const DEFAULT_SOLIDAPI_PROVIDER: CustomProviderDefinition = {
+  id: 'custom-solidapi-sub2api',
+  name: 'SolidAPI',
+  template: 'http-image',
+  submit: {
+    path: 'images/generations',
+    method: 'POST',
+    contentType: 'json',
+    body: {
+      model: '$profile.model',
+      prompt: '$prompt',
+      size: '$params.size',
+      quality: '$params.quality',
+      output_format: '$params.output_format',
+      moderation: '$params.moderation',
+      output_compression: '$params.output_compression',
+      n: '$params.n',
+    },
+    result: {
+      imageUrlPaths: ['data.*.url'],
+      b64JsonPaths: ['data.*.b64_json'],
+    },
+  },
+  editSubmit: {
+    path: 'images/edits',
+    method: 'POST',
+    contentType: 'multipart',
+    body: {
+      model: '$profile.model',
+      prompt: '$prompt',
+      size: '$params.size',
+      quality: '$params.quality',
+      output_format: '$params.output_format',
+      moderation: '$params.moderation',
+      output_compression: '$params.output_compression',
+      n: '$params.n',
+    },
+    files: [
+      { field: 'image[]', source: 'inputImages', array: true },
+      { field: 'mask', source: 'mask' },
+    ],
+    result: {
+      imageUrlPaths: ['data.*.url'],
+      b64JsonPaths: ['data.*.b64_json'],
+    },
+  },
+}
+
+const DEFAULT_SOLIDAPI_PROFILE_ID = 'solidapi-sub2api-gpt-image-2'
+
 export const DEFAULT_SETTINGS: AppSettings = normalizeSettings({
-  baseUrl: DEFAULT_BASE_URL,
+  baseUrl: 'https://solidapi.top/v1',
   apiKey: '',
-  model: DEFAULT_IMAGES_MODEL,
+  model: 'gpt-image-2',
   timeout: DEFAULT_API_TIMEOUT,
   apiMode: 'images',
   codexCli: false,
-  apiProxy: DEFAULT_OPENAI_API_PROXY,
-  customProviders: [],
+  apiProxy: false,
+  customProviders: [DEFAULT_SOLIDAPI_PROVIDER],
   clearInputAfterSubmit: false,
   persistInputOnRestart: true,
   reuseTaskApiProfileTemporarily: false,
   alwaysShowRetryButton: false,
   enterSubmit: false,
+  profiles: [
+    {
+      id: DEFAULT_SOLIDAPI_PROFILE_ID,
+      name: 'SolidAPI - gpt-image-2',
+      provider: 'custom-solidapi-sub2api',
+      baseUrl: 'https://solidapi.top/v1',
+      apiKey: '',
+      model: 'gpt-image-2',
+      timeout: DEFAULT_API_TIMEOUT,
+      apiMode: 'images',
+      codexCli: false,
+      apiProxy: false,
+    },
+  ],
+  activeProfileId: DEFAULT_SOLIDAPI_PROFILE_ID,
 })
