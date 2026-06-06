@@ -3,6 +3,16 @@
 export type ApiMode = 'images' | 'responses'
 export type AppMode = 'gallery' | 'agent'
 export type ReferenceImageEditAction = 'ask' | 'replace-reference' | 'add-mask'
+export const ZIP_DOWNLOAD_ROUTE_VALUES = [
+  'task-selection',
+  'favorite-collection-selection',
+  'image-context-menu-all',
+  'task-detail-all',
+  'task-detail-partial',
+  'agent-round-all',
+] as const
+export type ZipDownloadRoute = typeof ZIP_DOWNLOAD_ROUTE_VALUES[number]
+export const DEFAULT_ZIP_DOWNLOAD_ROUTES: ZipDownloadRoute[] = ['task-selection', 'favorite-collection-selection']
 export type BuiltInApiProvider = 'openai' | 'fal'
 export type ApiProvider = BuiltInApiProvider | string
 export type CustomProviderTemplate = 'http-image'
@@ -90,8 +100,10 @@ export interface AppSettings {
   persistInputOnRestart: boolean
   reuseTaskApiProfileTemporarily: boolean
   alwaysShowRetryButton: boolean
+  taskCompletionNotification: boolean
   enterSubmit: boolean
   referenceImageEditAction: ReferenceImageEditAction
+  zipDownloadRoutes: ZipDownloadRoute[]
   agentScrollToBottomAfterSubmit: boolean
   agentMaxToolRounds: number
   agentWebSearch: boolean
@@ -188,6 +200,8 @@ export interface TaskRecord {
   elapsed: number | null
   /** 是否收藏 */
   isFavorite?: boolean
+  /** 所属收藏夹 ID 列表 */
+  favoriteCollectionIds?: string[]
   /** 来源模式：画廊 / Agent */
   sourceMode?: AppMode
   /** Agent 对话 ID */
@@ -202,6 +216,13 @@ export interface TaskRecord {
   agentBatchCallId?: string
   /** Agent 图像工具实际动作 */
   agentToolAction?: 'generate' | 'edit' | 'auto' | string
+}
+
+export interface FavoriteCollection {
+  id: string
+  name: string
+  createdAt: number
+  updatedAt: number
 }
 
 // ===== Agent 模式 =====
@@ -398,6 +419,8 @@ export interface ExportData {
   exportedAt: string
   settings?: AppSettings
   tasks?: TaskRecord[]
+  favoriteCollections?: FavoriteCollection[]
+  defaultFavoriteCollectionId?: string | null
   agentConversations?: AgentConversation[]
   /** imageId → 图片信息 */
   imageFiles?: Record<string, {
