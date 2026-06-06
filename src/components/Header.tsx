@@ -11,7 +11,7 @@ import { EditIcon, HelpCircleIcon, HistoryIcon, InstallIcon, SettingsIcon } from
 
 type BeforeInstallPromptEvent = Event & {
   prompt: () => Promise<void>
-  userChoice: Promise<{ out come: 'accepted' | 'dismissed'; platform: string }>
+  userChoice: Promise<{ outcome: 'accepted' | 'dismissed'; platform: string }>
 }
 
 function isInstalledPwa() {
