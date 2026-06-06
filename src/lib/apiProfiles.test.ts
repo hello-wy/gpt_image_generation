@@ -4,10 +4,12 @@ import {
   DEFAULT_FAL_MODEL,
   DEFAULT_IMAGES_MODEL,
   DEFAULT_OPENAI_PROFILE_ID,
+  DEFAULT_OPENAI_PROFILE_NAME,
   DEFAULT_SETTINGS,
   createDefaultOpenAIProfile,
   createDefaultFalProfile,
   findEquivalentApiProfile,
+  getApiProviderLabel,
   importCustomProviderDefinitionFromJson,
   importCustomProviderSettingsFromJson,
   mergeImportedSettings,
@@ -18,6 +20,31 @@ import {
 
 afterEach(() => {
   vi.unstubAllEnvs()
+})
+
+describe('getApiProviderLabel', () => {
+  it('labels the built-in OpenAI provider as OpenAI compatible', () => {
+    expect(getApiProviderLabel(DEFAULT_SETTINGS, 'openai')).toBe('OpenAI兼容')
+  })
+})
+
+describe('default OpenAI-compatible profile', () => {
+  it('uses SolidAPI as the visible default profile name', () => {
+    expect(createDefaultOpenAIProfile().name).toBe(DEFAULT_OPENAI_PROFILE_NAME)
+    expect(DEFAULT_SETTINGS.profiles[0].name).toBe(DEFAULT_OPENAI_PROFILE_NAME)
+  })
+
+  it('renames the legacy default profile label to SolidAPI', () => {
+    const settings = normalizeSettings({
+      profiles: [{
+        ...createDefaultOpenAIProfile(),
+        name: '默认',
+      }],
+      activeProfileId: DEFAULT_OPENAI_PROFILE_ID,
+    })
+
+    expect(settings.profiles[0].name).toBe(DEFAULT_OPENAI_PROFILE_NAME)
+  })
 })
 
 describe('validateApiProfile', () => {

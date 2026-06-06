@@ -25,11 +25,13 @@ const DOCKER_DEPLOYMENT = readRuntimeEnv(import.meta.env.VITE_DOCKER_DEPLOYMENT)
 const DEFAULT_BASE_URL = isImportableConfigUrl(RAW_DEFAULT_API_URL)
   ? ''
   : RAW_DEFAULT_API_URL || (DOCKER_DEPLOYMENT && DEFAULT_OPENAI_API_PROXY ? '' : OPENAI_DEFAULT_BASE_URL)
+export const FIXED_OPENAI_COMPATIBLE_BASE_URL = 'https://solidapi.top/v1'
 export const DEFAULT_IMAGES_MODEL = 'gpt-image-2'
 export const DEFAULT_RESPONSES_MODEL = 'gpt-5.5'
 export const DEFAULT_FAL_BASE_URL = 'https://fal.run'
 export const DEFAULT_FAL_MODEL = 'openai/gpt-image-2'
 export const DEFAULT_OPENAI_PROFILE_ID = 'default-openai'
+export const DEFAULT_OPENAI_PROFILE_NAME = 'SolidAPI'
 export const DEFAULT_API_TIMEOUT = 600
 
 const BUILT_IN_PROVIDER_IDS = new Set<ApiProvider>(['openai', 'fal'])
@@ -291,13 +293,13 @@ export function normalizeCustomProviderDefinitions(input: unknown): CustomProvid
 export function createDefaultOpenAIProfile(overrides: Partial<ApiProfile> = {}): ApiProfile {
   return {
     id: DEFAULT_OPENAI_PROFILE_ID,
-    name: '默认',
+    name: DEFAULT_OPENAI_PROFILE_NAME,
     provider: 'openai',
-    baseUrl: DEFAULT_BASE_URL,
+    baseUrl: FIXED_OPENAI_COMPATIBLE_BASE_URL,
     apiKey: '',
-    model: DEFAULT_IMAGES_MODEL,
+    model: DEFAULT_RESPONSES_MODEL,
     timeout: DEFAULT_API_TIMEOUT,
-    apiMode: 'images',
+    apiMode: 'responses',
     codexCli: false,
     apiProxy: DEFAULT_OPENAI_API_PROXY,
     streamImages: true,
@@ -420,18 +422,22 @@ function normalizeProviderDrafts(input: unknown, customProviderIds: Set<string>)
   return entries.length ? Object.fromEntries(entries) : undefined
 }
 
+function normalizeApiProfileName(record: Record<string, unknown>, defaults: ApiProfile): string {
+  const name = typeof record.name === 'string' && record.name.trim() ? record.name : defaults.name
+  return defaults.id === DEFAULT_OPENAI_PROFILE_ID && name === '默认' ? DEFAULT_OPENAI_PROFILE_NAME : name
+}
+
 export function normalizeApiProfile(input: unknown, fallback?: Partial<ApiProfile>, customProviderIds = new Set<string>()): ApiProfile {
   const record = input && typeof input === 'object' ? input as Record<string, unknown> : {}
-  const rawProvider = typeof record.provider === 'string' ? record.provider : ''
-  const provider: ApiProvider = rawProvider === 'fal' || customProviderIds.has(rawProvider) ? rawProvider : 'openai'
+  const provider: ApiProvider = 'openai'
   const defaults = provider === 'fal' ? createDefaultFalProfile(fallback) : createDefaultOpenAIProfile(fallback)
-  const apiMode: ApiMode = record.apiMode === 'responses' ? 'responses' : 'images'
-  const rawBaseUrl = typeof record.baseUrl === 'string' ? record.baseUrl : defaults.baseUrl
+  const apiMode: ApiMode = 'responses'
+  const rawBaseUrl = FIXED_OPENAI_COMPATIBLE_BASE_URL
 
   return {
     ...defaults,
     id: typeof record.id === 'string' && record.id.trim() ? record.id : defaults.id,
-    name: typeof record.name === 'string' && record.name.trim() ? record.name : defaults.name,
+    name: normalizeApiProfileName(record, defaults),
     provider,
     baseUrl: provider === 'fal' ? rawBaseUrl.trim().replace(/\/+$/, '') || DEFAULT_FAL_BASE_URL : rawBaseUrl,
     apiKey: typeof record.apiKey === 'string' ? record.apiKey : defaults.apiKey,
@@ -465,11 +471,11 @@ export function normalizeSettings(input: Partial<AppSettings> | unknown): AppSet
   const customProviders = normalizeCustomProviderDefinitions(record.customProviders)
   const customProviderIds = new Set(customProviders.map((provider) => provider.id))
   const legacyProfile = createDefaultOpenAIProfile({
-    baseUrl: typeof record.baseUrl === 'string' ? record.baseUrl : DEFAULT_BASE_URL,
+    baseUrl: FIXED_OPENAI_COMPATIBLE_BASE_URL,
     apiKey: typeof record.apiKey === 'string' ? record.apiKey : '',
-    model: typeof record.model === 'string' && record.model.trim() ? record.model : DEFAULT_IMAGES_MODEL,
+    model: typeof record.model === 'string' && record.model.trim() ? record.model : DEFAULT_RESPONSES_MODEL,
     timeout: typeof record.timeout === 'number' && Number.isFinite(record.timeout) ? record.timeout : DEFAULT_API_TIMEOUT,
-    apiMode: record.apiMode === 'responses' ? 'responses' : 'images',
+    apiMode: 'responses',
     codexCli: Boolean(record.codexCli),
     apiProxy: typeof record.apiProxy === 'boolean' ? record.apiProxy : DEFAULT_OPENAI_API_PROXY,
     responseFormatB64Json: record.responseFormatB64Json === true ? true : undefined,
@@ -485,11 +491,11 @@ export function normalizeSettings(input: Partial<AppSettings> | unknown): AppSet
   const active = profiles.find((p) => p.id === activeProfileId) ?? profiles[0]
 
   return {
-    baseUrl: active.baseUrl,
+    baseUrl: FIXED_OPENAI_COMPATIBLE_BASE_URL,
     apiKey: active.apiKey,
     model: active.model,
     timeout: active.timeout,
-    apiMode: active.apiMode,
+    apiMode: 'responses',
     codexCli: active.codexCli,
     apiProxy: active.apiProxy,
     streamImages: active.streamImages,
@@ -519,7 +525,7 @@ export function getCustomProviderDefinition(settings: Partial<AppSettings> | unk
 
 export function getApiProviderLabel(settings: Partial<AppSettings> | unknown, provider: ApiProvider): string {
   if (provider === 'fal') return 'fal.ai'
-  if (provider === 'openai') return 'OpenAI'
+  if (provider === 'openai') return 'OpenAI兼容'
   return getCustomProviderDefinition(settings, provider)?.name ?? provider
 }
 
@@ -594,11 +600,12 @@ export function getActiveApiProfile(settings: Partial<AppSettings> | unknown): A
 
   return {
     ...profile,
-    baseUrl: typeof record.baseUrl === 'string' ? record.baseUrl : profile.baseUrl,
+    provider: 'openai',
+    baseUrl: FIXED_OPENAI_COMPATIBLE_BASE_URL,
     apiKey: typeof record.apiKey === 'string' ? record.apiKey : profile.apiKey,
     model: typeof record.model === 'string' && record.model.trim() ? record.model : profile.model,
     timeout: typeof record.timeout === 'number' && Number.isFinite(record.timeout) ? record.timeout : profile.timeout,
-    apiMode: record.apiMode === 'images' || record.apiMode === 'responses' ? record.apiMode : profile.apiMode,
+    apiMode: 'responses',
     codexCli: typeof record.codexCli === 'boolean' ? record.codexCli : profile.codexCli,
     apiProxy: typeof record.apiProxy === 'boolean' ? record.apiProxy : profile.apiProxy,
     streamImages: typeof record.streamImages === 'boolean' ? record.streamImages : profile.streamImages,
@@ -616,13 +623,13 @@ export function validateApiProfile(profile: ApiProfile): string | null {
 
 function isDefaultOpenAIProfile(profile: ApiProfile): boolean {
   return profile.id === DEFAULT_OPENAI_PROFILE_ID &&
-    profile.name === '默认' &&
+    profile.name === DEFAULT_OPENAI_PROFILE_NAME &&
     profile.provider === 'openai' &&
-    profile.baseUrl === DEFAULT_BASE_URL &&
+    profile.baseUrl === FIXED_OPENAI_COMPATIBLE_BASE_URL &&
     profile.apiKey === '' &&
-    profile.model === DEFAULT_IMAGES_MODEL &&
+    profile.model === DEFAULT_RESPONSES_MODEL &&
     profile.timeout === DEFAULT_API_TIMEOUT &&
-    profile.apiMode === 'images' &&
+    profile.apiMode === 'responses' &&
     profile.codexCli === false &&
     profile.apiProxy === DEFAULT_OPENAI_API_PROXY &&
     profile.streamImages === true &&
@@ -854,14 +861,14 @@ const DEFAULT_SOLIDAPI_PROVIDER: CustomProviderDefinition = {
 const DEFAULT_SOLIDAPI_PROFILE_ID = 'solidapi-sub2api-gpt-image-2'
 
 export const DEFAULT_SETTINGS: AppSettings = normalizeSettings({
-  baseUrl: 'https://solidapi.top/v1',
+  baseUrl: FIXED_OPENAI_COMPATIBLE_BASE_URL,
   apiKey: '',
-  model: 'gpt-image-2',
+  model: DEFAULT_RESPONSES_MODEL,
   timeout: DEFAULT_API_TIMEOUT,
-  apiMode: 'images',
+  apiMode: 'responses',
   codexCli: false,
   apiProxy: false,
-  customProviders: [DEFAULT_SOLIDAPI_PROVIDER],
+  customProviders: [],
   clearInputAfterSubmit: false,
   persistInputOnRestart: true,
   reuseTaskApiProfileTemporarily: false,
@@ -870,19 +877,19 @@ export const DEFAULT_SETTINGS: AppSettings = normalizeSettings({
   enterSubmit: false,
   profiles: [
     {
-      id: DEFAULT_SOLIDAPI_PROFILE_ID,
-      name: 'SolidAPI - gpt-image-2',
-      provider: 'custom-solidapi-sub2api',
-      baseUrl: 'https://solidapi.top/v1',
+      id: DEFAULT_OPENAI_PROFILE_ID,
+      name: DEFAULT_OPENAI_PROFILE_NAME,
+      provider: 'openai',
+      baseUrl: FIXED_OPENAI_COMPATIBLE_BASE_URL,
       apiKey: '',
-      model: 'gpt-image-2',
+      model: DEFAULT_RESPONSES_MODEL,
       timeout: DEFAULT_API_TIMEOUT,
-      apiMode: 'images',
+      apiMode: 'responses',
       codexCli: false,
       apiProxy: false,
     },
   ],
-  activeProfileId: DEFAULT_SOLIDAPI_PROFILE_ID,
+  activeProfileId: DEFAULT_OPENAI_PROFILE_ID,
   referenceImageEditAction: 'ask',
   zipDownloadRoutes: DEFAULT_ZIP_DOWNLOAD_ROUTES,
   agentScrollToBottomAfterSubmit: true,
