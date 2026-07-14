@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, useCallback } from 'react'
 import { createPortal } from 'react-dom'
 import { normalizeBaseUrl } from '../lib/api'
+import { hasActiveDataOperations } from '../lib/dataOperations'
 import { isApiProxyAvailable, isApiProxyLocked, readClientDevProxyConfig } from '../lib/devProxy'
 import { useStore, exportData, importData, clearData, type SettingsTab } from '../store'
 import {
@@ -307,9 +308,11 @@ export default function SettingsModal() {
   const setReusedTaskApiProfile = useStore((s) => s.setReusedTaskApiProfile)
   const setConfirmDialog = useStore((s) => s.setConfirmDialog)
   const showToast = useStore((s) => s.showToast)
+  const hasRunningOperations = useStore((s) => hasActiveDataOperations(s.tasks, s.agentConversations))
   const importInputRef = useRef<HTMLInputElement>(null)
   const profileMenuRef = useRef<HTMLDivElement>(null)
   const profileMenuTriggerRef = useRef<HTMLButtonElement>(null)
+  const dataTransferToastAtRef = useRef(0)
 
   const profileImportUrlTooltipTimerRef = useRef<number | null>(null)
   const duplicateProfileTooltipTimerRef = useRef<number | null>(null)
@@ -339,6 +342,7 @@ export default function SettingsModal() {
   const [importTasks, setImportTasks] = useState(true)
   const [clearConfig, setClearConfig] = useState(true)
   const [clearTasks, setClearTasks] = useState(true)
+  const [isExportingData, setIsExportingData] = useState(false)
   const [isImportingData, setIsImportingData] = useState(false)
   const [isImportingJson, setIsImportingJson] = useState(false)
   const [draggedProfileId, setDraggedProfileId] = useState<string | null>(null)
@@ -672,6 +676,10 @@ export default function SettingsModal() {
   }
 
   const handleClose = () => {
+    if (isExportingData || isImportingData) {
+      showDataTransferBusyToast()
+      return
+    }
     if (showZipDownloadRouteManager) {
       setShowZipDownloadRouteManager(false)
       return
@@ -742,17 +750,69 @@ export default function SettingsModal() {
     }
   }
 
-  useCloseOnEscape(showSettings, handleClose)
+  const dataTransferMode = isExportingData ? 'export' : isImportingData ? 'import' : null
+  const showDataTransferBusyToast = () => {
+    const now = Date.now()
+    if (now - dataTransferToastAtRef.current < 1000) return
+    dataTransferToastAtRef.current = now
+    showToast(dataTransferMode === 'export' ? '正在导出中，请稍候' : '正在导入中，请稍候', 'info')
+  }
+
+  useEffect(() => {
+    dataTransferToastAtRef.current = 0
+    if (!dataTransferMode) return
+    if (document.activeElement instanceof HTMLElement) document.activeElement.blur()
+    const preventKeyDown = (e: KeyboardEvent) => {
+      e.preventDefault()
+      e.stopImmediatePropagation()
+      showDataTransferBusyToast()
+    }
+    window.addEventListener('keydown', preventKeyDown, true)
+    return () => window.removeEventListener('keydown', preventKeyDown, true)
+  }, [dataTransferMode, showToast])
+
+  const blockDataTransferInteraction = (e: React.SyntheticEvent) => {
+    if (!dataTransferMode) return
+    e.preventDefault()
+    e.stopPropagation()
+    showDataTransferBusyToast()
+  }
+
+  const blockDataTransferClick = (e: React.SyntheticEvent) => {
+    if (!dataTransferMode) return
+    e.preventDefault()
+    e.stopPropagation()
+  }
+
+  useCloseOnEscape(showSettings && !dataTransferMode, handleClose)
   usePreventBackgroundScroll(showSettings, showZipDownloadRouteManager ? zipDownloadRouteScrollBoundaryRef : showCustomProviderImport ? customProviderScrollBoundaryRef : settingsScrollBoundaryRef)
 
   if (!showSettings) return null
 
+  const handleExport = async () => {
+    if (exportTasks && hasRunningOperations) {
+      showToast('当前有任务正在进行，请完成或停止后再导出', 'error')
+      return
+    }
+    setIsExportingData(true)
+    try {
+      await exportData({ exportConfig, exportTasks })
+    } finally {
+      setIsExportingData(false)
+    }
+  }
+
   const handleImport = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0]
-    if (file) {
+    const files = Array.from(e.target.files ?? [])
+    if (files.length) {
+      if (importTasks && hasRunningOperations) {
+        showToast('当前有任务正在进行，请完成或停止后再导入', 'error')
+        e.target.value = ''
+        return
+      }
       setIsImportingData(true)
       try {
-        const imported = await importData(file, { importConfig, importTasks })
+        const imported = await importData(files, { importConfig, importTasks })
         if (imported) {
           const nextDraft = normalizeSettings(useStore.getState().settings)
           setDraft(nextDraft)
@@ -1152,7 +1212,13 @@ export default function SettingsModal() {
   }
 
   return (
-        <div data-no-drag-select className="fixed inset-0 z-[70] flex items-center justify-center p-4">
+        <div
+          data-no-drag-select
+          className="fixed inset-0 z-[70] flex items-center justify-center p-4"
+          onPointerDownCapture={blockDataTransferInteraction}
+          onClickCapture={blockDataTransferClick}
+          onContextMenuCapture={blockDataTransferInteraction}
+        >
       <div
         className="absolute inset-0 bg-black/30 backdrop-blur-sm animate-overlay-in"
         onClick={handleClose}
@@ -1665,6 +1731,7 @@ export default function SettingsModal() {
                     <ExportIcon className="w-4 h-4 text-gray-700 dark:text-gray-300" />
                     <h4 className="text-sm font-bold text-gray-800 dark:text-gray-100">导出数据</h4>
                   </div>
+                  <p className="text-xs text-gray-500 dark:text-gray-400">受浏览器文件大小限制，过大的备份将自动分片导出，请允许浏览器下载多个文件</p>
                   <div className="flex flex-wrap gap-x-6 gap-y-3">
                     <Checkbox
                       checked={exportConfig}
@@ -1678,11 +1745,21 @@ export default function SettingsModal() {
                     />
                   </div>
                   <button
-                    onClick={() => exportData({ exportConfig, exportTasks })}
-                    disabled={!exportConfig && !exportTasks}
+                    onClick={handleExport}
+                    disabled={(!exportConfig && !exportTasks) || isExportingData}
                     className="w-full rounded-xl bg-gray-100/80 px-4 py-2.5 text-sm font-medium text-gray-700 transition-all hover:bg-gray-200 hover:text-gray-900 disabled:opacity-50 disabled:hover:bg-gray-100/80 disabled:hover:text-gray-700 dark:bg-white/[0.06] dark:text-gray-300 dark:hover:bg-white/[0.1] dark:hover:text-white dark:disabled:hover:bg-white/[0.06] dark:disabled:hover:text-gray-300 flex items-center justify-center gap-2"
                   >
-                    导出所选数据
+                    {isExportingData ? (
+                      <>
+                        <svg className="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24">
+                          <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                          <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                        </svg>
+                        导出中...
+                      </>
+                    ) : (
+                      '导出所选数据'
+                    )}
                   </button>
                 </div>
 
@@ -1691,6 +1768,7 @@ export default function SettingsModal() {
                     <ImportIcon className="w-4 h-4 text-gray-700 dark:text-gray-300" />
                     <h4 className="text-sm font-bold text-gray-800 dark:text-gray-100">导入数据</h4>
                   </div>
+                  <p className="text-xs text-gray-500 dark:text-gray-400">支持选择多个 ZIP 文件，分片备份请一次性选中同一批次的全部分片</p>
                   <div className="flex flex-wrap gap-x-6 gap-y-3">
                     <Checkbox
                       checked={importConfig}
@@ -1724,6 +1802,7 @@ export default function SettingsModal() {
                     ref={importInputRef}
                     type="file"
                     accept=".zip"
+                    multiple
                     className="hidden"
                     onChange={handleImport}
                   />
@@ -1757,7 +1836,7 @@ export default function SettingsModal() {
                       })
                     }
                     disabled={!clearConfig && !clearTasks}
-                    className="w-full rounded-xl border border-red-200/60 bg-red-50/50 px-4 py-2.5 text-sm font-medium text-red-500 transition-all hover:bg-red-50 hover:border-red-200 hover:text-red-600 disabled:opacity-50 disabled:hover:bg-red-50/50 disabled:hover:border-red-200/60 disabled:hover:text-red-500 dark:border-red-500/15 dark:bg-red-500/5 dark:text-red-400 dark:hover:bg-red-500/10 dark:hover:border-red-500/30 dark:hover:text-red-300 dark:disabled:hover:bg-red-500/5 dark:disabled:hover:border-red-500/15 dark:disabled:hover:text-red-400"
+                    className="w-full rounded-xl bg-red-100/80 px-4 py-2.5 text-sm font-medium text-red-600 transition-all hover:bg-red-200 hover:text-red-700 disabled:opacity-50 disabled:hover:bg-red-100/80 disabled:hover:text-red-600 dark:bg-red-500/10 dark:text-red-400 dark:hover:bg-red-500/20 dark:hover:text-red-300 dark:disabled:hover:bg-red-500/10 dark:disabled:hover:text-red-400"
                   >
                     清空所选数据
                   </button>

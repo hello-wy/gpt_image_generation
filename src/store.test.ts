@@ -4,6 +4,7 @@ import { DEFAULT_PARAMS } from './types'
 import { createDefaultFalProfile, createDefaultOpenAIProfile, DEFAULT_RESPONSES_MODEL, DEFAULT_SETTINGS, normalizeSettings } from './lib/apiProfiles'
 import type { AgentConversation, ExportData, StoredImage, StoredImageThumbnail, TaskRecord } from './types'
 import { getSelectedImageMentionLabel } from './lib/promptImageMentions'
+import { hasActiveDataOperations } from './lib/dataOperations'
 vi.mock('./lib/db', () => {
   const tasks = new Map<string, TaskRecord>()
   const images = new Map<string, StoredImage>()
@@ -131,7 +132,7 @@ import { clearAgentConversations, clearImages, clearTasks, getAllAgentConversati
 import { callAgentResponsesApi, callBatchImageSingle } from './lib/agentApi'
 import { getFalQueuedImageResult } from './lib/falAiImageApi'
 import { removeKeyedBackgroundFromDataUrl } from './lib/transparentImage'
-import { cleanStaleAgentInputDrafts, clearFailedTasks, deleteAgentRoundFromConversation, deleteFavoriteCollection, editOutputs, getActiveAgentRounds, getErrorToastMessage, getPersistedState, getTaskApiProfile, importData, initStore, markInterruptedOpenAIRunningTasks, migratePersistedState, regenerateAgentAssistantMessage, remapAgentRoundMentionsForPathChange, removeTask, reuseConfig, submitAgentMessage, submitTask, taskMatchesFilterStatus, taskMatchesSearchQuery, useStore } from './store'
+import { cleanStaleAgentInputDrafts, clearFailedTasks, deleteAgentRoundFromConversation, deleteFavoriteCollection, editOutputs, getActiveAgentRounds, getAgentConversationTaskIds, getAgentRoundTaskIds, getErrorToastMessage, getPersistedState, getTaskApiProfile, importData, initStore, markInterruptedOpenAIRunningTasks, migratePersistedState, regenerateAgentAssistantMessage, remapAgentRoundMentionsForPathChange, removeTask, reuseConfig, stopAgentResponse, submitAgentMessage, submitTask, taskMatchesFilterStatus, taskMatchesSearchQuery, useStore } from './store'
 
 const imageA = { id: 'image-a', dataUrl: 'data:image/png;base64,a' }
 const imageB = { id: 'image-b', dataUrl: 'data:image/png;base64,b' }
@@ -177,11 +178,33 @@ function task(overrides: Partial<TaskRecord> = {}): TaskRecord {
   }
 }
 
-function importFile(data: ExportData): File {
-  const zipped = zipSync({ 'manifest.json': strToU8(JSON.stringify(data)) })
+function importFile(data: ExportData, files: Record<string, Uint8Array> = {}): File {
+  const zipped = zipSync({ ...files, 'manifest.json': strToU8(JSON.stringify(data)) })
   const buffer = zipped.buffer.slice(zipped.byteOffset, zipped.byteOffset + zipped.byteLength)
-  return { arrayBuffer: async () => buffer } as File
+  return { name: 'backup.zip', size: zipped.byteLength, arrayBuffer: async () => buffer.slice(0) } as File
 }
+
+describe('data operation locking', () => {
+  it('detects running and recoverable work before import or export', () => {
+    expect(hasActiveDataOperations([task({ status: 'running' })], [])).toBe(true)
+    expect(hasActiveDataOperations([task({ falRecoverable: true })], [])).toBe(true)
+    expect(hasActiveDataOperations([], [agentConversation({
+      rounds: [{
+        id: 'round-a',
+        index: 1,
+        userMessageId: 'message-a',
+        prompt: 'prompt',
+        inputImageIds: [],
+        outputTaskIds: [],
+        status: 'running',
+        error: null,
+        createdAt: 1,
+        finishedAt: null,
+      }],
+    })])).toBe(true)
+    expect(hasActiveDataOperations([task()], [])).toBe(false)
+  })
+})
 
 describe('favorite collection deletion', () => {
   const collectionA = { id: 'collection-a', name: '收藏夹 A', createdAt: 1, updatedAt: 1 }
@@ -720,7 +743,9 @@ describe('fal task recovery', () => {
   beforeEach(async () => {
     await clearTasks()
     await clearImages()
+    await clearAgentConversations()
     vi.mocked(getFalQueuedImageResult).mockClear()
+    vi.mocked(callAgentResponsesApi).mockClear()
     vi.mocked(removeKeyedBackgroundFromDataUrl).mockClear()
     const falProfile = createDefaultFalProfile({ id: 'fal-profile', apiKey: 'fal-key' })
     useStore.setState({
@@ -784,6 +809,476 @@ describe('fal task recovery', () => {
     const originalImage = await getImage(recovered!.transparentOriginalImages![0])
     expect(outputImage?.dataUrl).toBe('transparent:data:image/png;base64,fal-recovered')
     expect(originalImage?.dataUrl).toBe('data:image/png;base64,fal-recovered')
+  })
+
+  it('continues an Agent round after all fal image tasks recover', async () => {
+    const textProfile = createDefaultOpenAIProfile({ id: 'agent-text-profile', apiKey: 'text-key', apiMode: 'responses' })
+    const imageProfile = createDefaultFalProfile({ id: 'fal-profile', apiKey: 'fal-key' })
+    const agentTask = task({
+      id: 'agent-fal-task',
+      prompt: '画一只猫',
+      apiProvider: 'fal',
+      apiProfileId: imageProfile.id,
+      apiProfileName: imageProfile.name,
+      apiModel: imageProfile.model,
+      status: 'error',
+      error: '与 fal.ai 的连接已断开，之后会继续查询任务结果。',
+      falRequestId: 'fal-request-id',
+      falEndpoint: 'fal-endpoint',
+      falRecoverable: true,
+      sourceMode: 'agent',
+      agentConversationId: 'conversation-a',
+      agentRoundId: 'round-a',
+      agentMessageId: 'assistant-a',
+      agentToolCallId: 'tool-a',
+      finishedAt: Date.now(),
+      elapsed: 10,
+    })
+    const conversation = agentConversation({
+      id: 'conversation-a',
+      activeRoundId: 'round-a',
+      rounds: [{
+        id: 'round-a',
+        index: 1,
+        parentRoundId: null,
+        userMessageId: 'user-a',
+        assistantMessageId: 'assistant-a',
+        prompt: '画一只猫',
+        inputImageIds: [],
+        outputTaskIds: [agentTask.id],
+        responseOutput: [{ type: 'function_call', name: 'generate_image', call_id: 'tool-a', arguments: JSON.stringify({ id: 'cat', prompt: '画一只猫' }) }],
+        status: 'running',
+        error: null,
+        createdAt: 1,
+        finishedAt: null,
+      }],
+      messages: [
+        { id: 'user-a', role: 'user', content: '画一只猫', roundId: 'round-a', createdAt: 1 },
+        { id: 'assistant-a', role: 'assistant', content: '', roundId: 'round-a', outputTaskIds: [agentTask.id], createdAt: 2 },
+      ],
+    })
+    vi.mocked(getFalQueuedImageResult).mockResolvedValue({
+      images: ['data:image/png;base64,agent-recovered'],
+      actualParams: {},
+      actualParamsList: [{}],
+      revisedPrompts: [],
+    })
+    vi.mocked(callAgentResponsesApi).mockResolvedValueOnce({
+      text: '已完成。',
+      images: [],
+      outputItems: [{ type: 'message', content: [{ type: 'output_text', text: '已完成。' }] }],
+      responseId: 'response-done',
+    })
+    useStore.setState({
+      settings: normalizeSettings({
+        ...DEFAULT_SETTINGS,
+        profiles: [textProfile, imageProfile],
+        activeProfileId: textProfile.id,
+        agentApiConfigMode: 'hybrid',
+        agentTextProfileId: textProfile.id,
+        agentImageProfileId: imageProfile.id,
+      }),
+      tasks: [],
+      agentConversations: [],
+      activeAgentConversationId: conversation.id,
+      showToast: vi.fn(),
+    })
+    await putDbTask(agentTask)
+    await putAgentConversation(conversation)
+
+    await initStore()
+    for (let i = 0; i < 20 && useStore.getState().agentConversations[0]?.rounds[0]?.status !== 'done'; i += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 0))
+    }
+
+    const recoveredTask = useStore.getState().tasks.find((item) => item.id === agentTask.id)
+    expect(recoveredTask).toMatchObject({ status: 'done', falRecoverable: false })
+    expect(callAgentResponsesApi).toHaveBeenCalledTimes(1)
+    const agentInputJson = JSON.stringify(vi.mocked(callAgentResponsesApi).mock.calls[0][0].input)
+    expect(agentInputJson).toContain('function_call_output')
+    expect(agentInputJson).toContain('\\"status\\":\\"done\\"')
+    const round = useStore.getState().agentConversations[0].rounds[0]
+    expect(round).toMatchObject({ status: 'done', error: null, responseId: 'response-done' })
+    expect(round.responseOutput).toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: 'function_call_output', call_id: 'tool-a' }),
+    ]))
+  })
+
+  it('records recovered Agent tool failures without continuing the Agent round', async () => {
+    const textProfile = createDefaultOpenAIProfile({ id: 'agent-text-profile', apiKey: 'text-key', apiMode: 'responses' })
+    const imageProfile = createDefaultFalProfile({ id: 'fal-profile', apiKey: 'fal-key' })
+    const agentTask = task({
+      id: 'agent-fal-task',
+      prompt: '画一只猫',
+      apiProvider: 'fal',
+      apiProfileId: imageProfile.id,
+      apiProfileName: imageProfile.name,
+      apiModel: imageProfile.model,
+      status: 'error',
+      error: '与 fal.ai 的连接已断开，之后会继续查询任务结果。',
+      falRequestId: 'fal-request-id',
+      falEndpoint: 'fal-endpoint',
+      falRecoverable: true,
+      sourceMode: 'agent',
+      agentConversationId: 'conversation-a',
+      agentRoundId: 'round-a',
+      agentMessageId: 'assistant-a',
+      agentToolCallId: 'tool-a',
+      finishedAt: Date.now(),
+      elapsed: 10,
+    })
+    const conversation = agentConversation({
+      id: 'conversation-a',
+      activeRoundId: 'round-a',
+      rounds: [{
+        id: 'round-a',
+        index: 1,
+        parentRoundId: null,
+        userMessageId: 'user-a',
+        assistantMessageId: 'assistant-a',
+        prompt: '画一只猫',
+        inputImageIds: [],
+        outputTaskIds: [agentTask.id],
+        responseOutput: [{ type: 'function_call', name: 'generate_image', call_id: 'tool-a', arguments: JSON.stringify({ id: 'cat', prompt: '画一只猫' }) }],
+        status: 'running',
+        error: null,
+        createdAt: 1,
+        finishedAt: null,
+      }],
+      messages: [
+        { id: 'user-a', role: 'user', content: '画一只猫', roundId: 'round-a', createdAt: 1 },
+        { id: 'assistant-a', role: 'assistant', content: '', roundId: 'round-a', outputTaskIds: [agentTask.id], createdAt: 2 },
+      ],
+    })
+    vi.mocked(getFalQueuedImageResult).mockRejectedValueOnce(new Error('quota exceeded'))
+    useStore.setState({
+      settings: normalizeSettings({
+        ...DEFAULT_SETTINGS,
+        profiles: [textProfile, imageProfile],
+        activeProfileId: textProfile.id,
+        agentApiConfigMode: 'hybrid',
+        agentTextProfileId: textProfile.id,
+        agentImageProfileId: imageProfile.id,
+      }),
+      tasks: [],
+      agentConversations: [],
+      activeAgentConversationId: 'conversation-a',
+      showToast: vi.fn(),
+    })
+    await putDbTask(agentTask)
+    await putAgentConversation(conversation)
+
+    await initStore()
+    for (let i = 0; i < 20 && useStore.getState().tasks.find((item) => item.id === agentTask.id)?.falRecoverable !== false; i += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 0))
+    }
+
+    expect(callAgentResponsesApi).not.toHaveBeenCalled()
+    const failedTask = useStore.getState().tasks.find((item) => item.id === agentTask.id)
+    expect(failedTask).toMatchObject({ status: 'error', error: 'quota exceeded', falRecoverable: false })
+    const round = useStore.getState().agentConversations[0].rounds[0]
+    expect(round).toMatchObject({ status: 'error', error: 'quota exceeded' })
+    const toolOutput = round.responseOutput?.find((item) => item.type === 'function_call_output')
+    expect(toolOutput).toMatchObject({ call_id: 'tool-a' })
+    expect(toolOutput?.output).toContain('"status":"error"')
+    expect(toolOutput?.output).toContain('quota exceeded')
+  })
+
+  it('does not call Agent again when recovered tasks already reached the tool limit', async () => {
+    const textProfile = createDefaultOpenAIProfile({ id: 'agent-text-profile', apiKey: 'text-key', apiMode: 'responses' })
+    const imageProfile = createDefaultFalProfile({ id: 'fal-profile', apiKey: 'fal-key' })
+    const agentTask = task({
+      id: 'agent-fal-task',
+      prompt: '画一只猫',
+      apiProvider: 'fal',
+      apiProfileId: imageProfile.id,
+      apiProfileName: imageProfile.name,
+      apiModel: imageProfile.model,
+      status: 'error',
+      error: '与 fal.ai 的连接已断开，之后会继续查询任务结果。',
+      falRequestId: 'limit-request-id',
+      falEndpoint: 'fal-endpoint',
+      falRecoverable: true,
+      sourceMode: 'agent',
+      agentConversationId: 'conversation-a',
+      agentRoundId: 'round-a',
+      agentMessageId: 'assistant-a',
+      agentToolCallId: 'tool-a',
+      finishedAt: Date.now(),
+      elapsed: 10,
+    })
+    const conversation = agentConversation({
+      id: 'conversation-a',
+      activeRoundId: 'round-a',
+      rounds: [{
+        id: 'round-a',
+        index: 1,
+        parentRoundId: null,
+        userMessageId: 'user-a',
+        assistantMessageId: 'assistant-a',
+        prompt: '画一只猫',
+        inputImageIds: [],
+        outputTaskIds: [agentTask.id],
+        responseOutput: [{ type: 'function_call', name: 'generate_image', call_id: 'tool-a', arguments: JSON.stringify({ id: 'cat', prompt: '画一只猫' }) }],
+        status: 'running',
+        error: null,
+        createdAt: 1,
+        finishedAt: null,
+      }],
+      messages: [
+        { id: 'user-a', role: 'user', content: '画一只猫', roundId: 'round-a', createdAt: 1 },
+        { id: 'assistant-a', role: 'assistant', content: '', roundId: 'round-a', outputTaskIds: [agentTask.id], createdAt: 2 },
+      ],
+    })
+    vi.mocked(getFalQueuedImageResult).mockResolvedValueOnce({
+      images: ['data:image/png;base64,agent-recovered-limit'],
+      actualParams: {},
+      actualParamsList: [{}],
+      revisedPrompts: [],
+    })
+    useStore.setState({
+      settings: normalizeSettings({
+        ...DEFAULT_SETTINGS,
+        profiles: [textProfile, imageProfile],
+        activeProfileId: textProfile.id,
+        agentApiConfigMode: 'hybrid',
+        agentTextProfileId: textProfile.id,
+        agentImageProfileId: imageProfile.id,
+        agentMaxToolRounds: 1,
+      }),
+      tasks: [],
+      agentConversations: [],
+      activeAgentConversationId: conversation.id,
+      showToast: vi.fn(),
+    })
+    await putDbTask(agentTask)
+    await putAgentConversation(conversation)
+
+    await initStore()
+    for (let i = 0; i < 20 && useStore.getState().agentConversations[0]?.rounds[0]?.status !== 'done'; i += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 0))
+    }
+
+    expect(callAgentResponsesApi).not.toHaveBeenCalled()
+    const round = useStore.getState().agentConversations[0].rounds[0]
+    expect(round).toMatchObject({ status: 'done', error: null })
+    expect(useStore.getState().agentConversations[0].messages.find((message) => message.id === 'assistant-a')?.content).toContain('已达到最大工具调用次数（1）')
+  })
+
+  it('does not continue a stopped Agent round when a recoverable fal task later completes', async () => {
+    const textProfile = createDefaultOpenAIProfile({ id: 'agent-text-profile', apiKey: 'text-key', apiMode: 'responses' })
+    const imageProfile = createDefaultFalProfile({ id: 'fal-profile', apiKey: 'fal-key' })
+    const agentTask = task({
+      id: 'agent-fal-task',
+      prompt: '画一只猫',
+      apiProvider: 'fal',
+      apiProfileId: imageProfile.id,
+      apiProfileName: imageProfile.name,
+      apiModel: imageProfile.model,
+      status: 'error',
+      error: '与 fal.ai 的连接已断开，之后会继续查询任务结果。',
+      falRequestId: 'fal-request-id',
+      falEndpoint: 'fal-endpoint',
+      falRecoverable: true,
+      sourceMode: 'agent',
+      agentConversationId: 'conversation-a',
+      agentRoundId: 'round-a',
+      agentMessageId: 'assistant-a',
+      agentToolCallId: 'tool-a',
+      finishedAt: Date.now(),
+      elapsed: 10,
+    })
+    const conversation = agentConversation({
+      id: 'conversation-a',
+      activeRoundId: 'round-a',
+      rounds: [{
+        id: 'round-a',
+        index: 1,
+        parentRoundId: null,
+        userMessageId: 'user-a',
+        assistantMessageId: 'assistant-a',
+        prompt: '画一只猫',
+        inputImageIds: [],
+        outputTaskIds: [agentTask.id],
+        responseOutput: [{ type: 'function_call', name: 'generate_image', call_id: 'tool-a', arguments: JSON.stringify({ id: 'cat', prompt: '画一只猫' }) }],
+        status: 'error',
+        error: '已停止生成。',
+        createdAt: 1,
+        finishedAt: 2,
+      }],
+      messages: [
+        { id: 'user-a', role: 'user', content: '画一只猫', roundId: 'round-a', createdAt: 1 },
+        { id: 'assistant-a', role: 'assistant', content: '已停止生成。', roundId: 'round-a', outputTaskIds: [agentTask.id], createdAt: 2 },
+      ],
+    })
+    vi.mocked(getFalQueuedImageResult).mockResolvedValueOnce({
+      images: ['data:image/png;base64,agent-recovered-after-stop'],
+      actualParams: {},
+      actualParamsList: [{}],
+      revisedPrompts: [],
+    })
+    useStore.setState({
+      settings: normalizeSettings({
+        ...DEFAULT_SETTINGS,
+        profiles: [textProfile, imageProfile],
+        activeProfileId: textProfile.id,
+        agentApiConfigMode: 'hybrid',
+        agentTextProfileId: textProfile.id,
+        agentImageProfileId: imageProfile.id,
+      }),
+      tasks: [],
+      agentConversations: [],
+      activeAgentConversationId: 'conversation-a',
+      showToast: vi.fn(),
+    })
+    await putDbTask(agentTask)
+    await putAgentConversation(conversation)
+
+    await initStore()
+    for (let i = 0; i < 20 && useStore.getState().tasks.find((item) => item.id === agentTask.id)?.falRecoverable !== false; i += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 0))
+    }
+
+    expect(callAgentResponsesApi).not.toHaveBeenCalled()
+    expect(useStore.getState().tasks.find((item) => item.id === agentTask.id)).toMatchObject({ status: 'done', falRecoverable: false })
+    expect(useStore.getState().agentConversations[0].rounds[0]).toMatchObject({ status: 'error', error: '已停止生成。' })
+  })
+
+  it('does not overwrite a stopped Agent task when an in-flight fal recovery completes', async () => {
+    const agentTask = task({
+      id: 'agent-fal-task',
+      prompt: '画一只猫',
+      apiProvider: 'fal',
+      apiProfileId: 'fal-profile',
+      apiProfileName: 'fal',
+      apiModel: 'fal-model',
+      status: 'error',
+      error: '与 fal.ai 的连接已断开，之后会继续查询任务结果。',
+      falRequestId: 'fal-request-id',
+      falEndpoint: 'fal-endpoint',
+      falRecoverable: true,
+      sourceMode: 'agent',
+      agentConversationId: 'conversation-a',
+      agentRoundId: 'round-a',
+      agentMessageId: 'assistant-a',
+      agentToolCallId: 'tool-a',
+      finishedAt: Date.now(),
+      elapsed: 10,
+    })
+    let resolveRecovery: (value: Awaited<ReturnType<typeof getFalQueuedImageResult>>) => void = () => {}
+    vi.mocked(getFalQueuedImageResult).mockImplementationOnce(() => new Promise((resolve) => { resolveRecovery = resolve }))
+    const conversation = agentConversation({
+      id: 'conversation-a',
+      activeRoundId: 'round-a',
+      rounds: [{
+        id: 'round-a',
+        index: 1,
+        parentRoundId: null,
+        userMessageId: 'user-a',
+        assistantMessageId: 'assistant-a',
+        prompt: '画一只猫',
+        inputImageIds: [],
+        outputTaskIds: [agentTask.id],
+        status: 'running',
+        error: null,
+        createdAt: 1,
+        finishedAt: null,
+      }],
+      messages: [
+        { id: 'user-a', role: 'user', content: '画一只猫', roundId: 'round-a', createdAt: 1 },
+        { id: 'assistant-a', role: 'assistant', content: '', roundId: 'round-a', outputTaskIds: [agentTask.id], createdAt: 2 },
+      ],
+    })
+    useStore.setState({
+      tasks: [],
+      agentConversations: [],
+      activeAgentConversationId: 'conversation-a',
+      showToast: vi.fn(),
+    })
+    await putDbTask(agentTask)
+    await putAgentConversation(conversation)
+
+    await initStore()
+    for (let i = 0; i < 20 && vi.mocked(getFalQueuedImageResult).mock.calls.length === 0; i += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 0))
+    }
+    useStore.setState((state) => ({
+      agentConversations: state.agentConversations.map((item) => item.id === 'conversation-a'
+        ? { ...item, rounds: item.rounds.map((round) => round.id === 'round-a' ? { ...round, status: 'running', error: null } : round) }
+        : item),
+    }))
+    stopAgentResponse('conversation-a')
+    resolveRecovery({
+      images: ['data:image/png;base64,should-not-write'],
+      actualParams: {},
+      actualParamsList: [{}],
+      revisedPrompts: [],
+    })
+    for (let i = 0; i < 5; i += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 0))
+    }
+
+    expect(useStore.getState().tasks[0]).toMatchObject({
+      status: 'error',
+      error: '已停止生成。',
+      falRecoverable: false,
+      outputImages: [],
+    })
+  })
+
+  it('clears recoverable Agent image tasks when stopping the Agent round', () => {
+    const agentTask = task({
+      id: 'agent-fal-task',
+      status: 'error',
+      error: '与 fal.ai 的连接已断开，之后会继续查询任务结果。',
+      falRequestId: 'fal-request-id',
+      falEndpoint: 'fal-endpoint',
+      falRecoverable: true,
+      sourceMode: 'agent',
+      agentConversationId: 'conversation-a',
+      agentRoundId: 'round-a',
+      agentMessageId: 'assistant-a',
+      agentToolCallId: 'tool-a',
+    })
+    useStore.setState({
+      tasks: [agentTask],
+      activeAgentConversationId: 'conversation-a',
+      agentConversations: [agentConversation({
+        id: 'conversation-a',
+        activeRoundId: 'round-a',
+        rounds: [{
+          id: 'round-a',
+          index: 1,
+          parentRoundId: null,
+          userMessageId: 'user-a',
+          assistantMessageId: 'assistant-a',
+          prompt: '画一只猫',
+          inputImageIds: [],
+          outputTaskIds: [agentTask.id],
+          status: 'running',
+          error: null,
+          createdAt: 1,
+          finishedAt: null,
+        }],
+        messages: [
+          { id: 'user-a', role: 'user', content: '画一只猫', roundId: 'round-a', createdAt: 1 },
+          { id: 'assistant-a', role: 'assistant', content: '', roundId: 'round-a', outputTaskIds: [agentTask.id], createdAt: 2 },
+        ],
+      })],
+      showToast: vi.fn(),
+    })
+
+    stopAgentResponse('conversation-a')
+
+    expect(useStore.getState().tasks[0]).toMatchObject({
+      status: 'error',
+      error: '已停止生成。',
+      falRecoverable: false,
+    })
+    expect(useStore.getState().agentConversations[0].rounds[0]).toMatchObject({
+      status: 'error',
+      error: '已停止生成。',
+    })
   })
 })
 
@@ -984,6 +1479,35 @@ describe('agent round deletion', () => {
     expect(remapAgentRoundMentionsForPathChange('继续参考 @第1轮图1、@第2轮图1、@第3轮图1', oldPath, newPath))
       .toBe('继续参考 @第1轮图1、@已删除轮次图1、@第2轮图1')
   })
+
+  it('collects agent round and conversation tasks even when some failed tasks are not in outputTaskIds', () => {
+    const conversation = agentConversation({
+      id: 'conversation-a',
+      rounds: [{
+        id: 'round-a',
+        index: 1,
+        parentRoundId: null,
+        userMessageId: 'user-a',
+        assistantMessageId: 'assistant-a',
+        prompt: '第一轮',
+        inputImageIds: [],
+        outputTaskIds: ['task-success'],
+        status: 'done',
+        error: null,
+        createdAt: 1,
+        finishedAt: 2,
+      }],
+      messages: [],
+    })
+    const tasks = [
+      task({ id: 'task-success', agentConversationId: 'conversation-a', agentRoundId: 'round-a', status: 'done', outputImages: ['image-a'] }),
+      task({ id: 'task-failed', agentConversationId: 'conversation-a', agentRoundId: 'round-a', status: 'error', error: '失败' }),
+      task({ id: 'task-unrelated', agentConversationId: 'other', agentRoundId: 'other-round', status: 'error', error: '失败' }),
+    ]
+
+    expect(getAgentRoundTaskIds(conversation.rounds[0], tasks)).toEqual(['task-success', 'task-failed'])
+    expect(getAgentConversationTaskIds(conversation, tasks)).toEqual(['task-success', 'task-failed'])
+  })
 })
 
 describe('data import', () => {
@@ -1157,6 +1681,90 @@ describe('data import', () => {
     expect('agentConversations' in persisted).toBe(false)
     expect(serializedPersisted).not.toContain('image_generation_call')
     expect(serializedPersisted).not.toContain('imported-legacy-base64')
+  })
+
+  it('imports a complete multipart backup selected in any order', async () => {
+    await clearTasks()
+    await clearImages()
+    const importedTask = task({ id: 'multipart-task', outputImages: ['multipart-image-a', 'multipart-image-b'] })
+    const part1 = importFile({
+      version: 3,
+      exportedAt: new Date(0).toISOString(),
+      backupPart: { id: 'backup-a', index: 1, total: 2 },
+      tasks: [importedTask],
+      favoriteCollections: [],
+      agentConversations: [],
+      imageFiles: { 'multipart-image-a': { path: 'images/image-a.png' } },
+    }, { 'images/image-a.png': new Uint8Array([1, 2]) })
+    const part2 = importFile({
+      version: 3,
+      exportedAt: new Date(0).toISOString(),
+      backupPart: { id: 'backup-a', index: 2, total: 2 },
+      tasks: [task({ id: 'multipart-task-2' })],
+      imageFiles: { 'multipart-image-b': { path: 'images/image-b.png' } },
+    }, { 'images/image-b.png': new Uint8Array([3, 4]) })
+
+    const imported = await importData([part2, part1], { importConfig: false, importTasks: true })
+
+    expect(imported).toBe(true)
+    expect((await getAllTasks()).some((item) => item.id === importedTask.id)).toBe(true)
+    expect((await getAllTasks()).some((item) => item.id === 'multipart-task-2')).toBe(true)
+    expect(await getImage('multipart-image-a')).toMatchObject({ dataUrl: 'data:image/png;base64,AQI=' })
+    expect(await getImage('multipart-image-b')).toMatchObject({ dataUrl: 'data:image/png;base64,AwQ=' })
+  })
+
+  it('rejects an incomplete multipart backup before importing data', async () => {
+    await clearTasks()
+    const part1 = importFile({
+      version: 3,
+      exportedAt: new Date(0).toISOString(),
+      backupPart: { id: 'backup-a', index: 1, total: 2 },
+      tasks: [task({ id: 'incomplete-task' })],
+      imageFiles: {},
+    })
+
+    const imported = await importData([part1], { importConfig: false, importTasks: true })
+
+    expect(imported).toBe(false)
+    expect((await getAllTasks()).some((item) => item.id === 'incomplete-task')).toBe(false)
+  })
+
+  it('validates image entries in every part before writing earlier parts', async () => {
+    await clearImages()
+    const part1 = importFile({
+      version: 3,
+      exportedAt: new Date(0).toISOString(),
+      backupPart: { id: 'backup-a', index: 1, total: 2 },
+      tasks: [],
+      imageFiles: { 'preflight-image-a': { path: 'images/image-a.png' } },
+    }, { 'images/image-a.png': new Uint8Array([1, 2]) })
+    const part2 = importFile({
+      version: 3,
+      exportedAt: new Date(0).toISOString(),
+      backupPart: { id: 'backup-a', index: 2, total: 2 },
+      imageFiles: { 'preflight-image-b': { path: 'images/missing.png' } },
+    })
+
+    const imported = await importData([part1, part2], { importConfig: false, importTasks: true })
+
+    expect(imported).toBe(false)
+    expect(await getImage('preflight-image-a')).toBeUndefined()
+  })
+
+  it('imports config with running tasks without requiring image parts', async () => {
+    useStore.setState({ tasks: [task({ status: 'running' })] })
+    const part1 = importFile({
+      version: 3,
+      exportedAt: new Date(0).toISOString(),
+      backupPart: { id: 'config-backup', index: 1, total: 3 },
+      settings: DEFAULT_SETTINGS,
+      tasks: [],
+      imageFiles: { 'unused-image': { path: 'images/missing.png' } },
+    })
+
+    const imported = await importData([part1], { importConfig: true, importTasks: false })
+
+    expect(imported).toBe(true)
   })
 
 })
