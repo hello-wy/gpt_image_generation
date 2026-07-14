@@ -475,7 +475,9 @@ export function normalizeApiProfile(input: unknown, fallback?: Partial<ApiProfil
     : createDefaultOpenAIProfile({ ...fallback, apiMode })
   const rawBaseUrl = typeof record.baseUrl === 'string' ? record.baseUrl : defaults.baseUrl
   const streamImages = provider === 'openai'
-    ? typeof record.streamImages === 'boolean' ? record.streamImages : defaults.streamImages
+    ? typeof record.streamImages === 'boolean'
+      ? record.streamImages
+      : defaults.streamImages ?? getDefaultStreamImages(provider, apiMode)
     : false
 
   return {

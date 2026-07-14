@@ -189,12 +189,7 @@
 
 **配置自动更新**：
 
-本项目已在 `vercel.json` 中关闭了默认的自动部署。若需在同步 GitHub 上游代码后自动更新 Vercel 部署：
-
-1. 在 Vercel 项目设置 **Settings -> Git** 的 **Deploy Hooks** 中创建一个名为 `Release` 的 Hook（Branch 填 `main`）并复制生成的 URL。
-2. 在你 Fork 的 GitHub 仓库设置 **Settings -> Secrets and variables -> Actions** 中，新建 Secret `VERCEL_DEPLOY_HOOK`，填入刚才的 URL。
-
-此后，每次在 GitHub 点击 **Sync fork** 同步上游，都会自动触发 Vercel 构建部署最新版。
+连接 Git 仓库后，Vercel 会在推送到生产分支时自动构建并部署。Fork 仓库同步上游代码后，会自动部署最新提交，无需配置 Deploy Hook 或 GitHub Secret。
 
 </details>
 
@@ -206,27 +201,27 @@
 **1. 登录 Cloudflare**
 
 ```bash
-npx wrangler login
+pnpm exec wrangler login
 ```
 
 **2. 部署到 Workers**
 
 ```bash
-npm run deploy:cf
+pnpm run deploy:cf
 ```
 
-部署脚本会先执行 `npm run build`，再通过 `wrangler deploy` 上传 `dist/` 目录。
+部署脚本会先执行 `pnpm run build`，再通过 `wrangler deploy` 上传 `dist/` 目录。
 
 **配置默认 API URL**：Cloudflare Workers 的环境变量不会自动改写已经构建好的静态文件。若需预设默认 API 地址，请在构建前设置 `VITE_DEFAULT_API_URL` 后再部署。
 
 ```bash
-VITE_DEFAULT_API_URL=https://api.openai.com/v1 npm run deploy:cf
+VITE_DEFAULT_API_URL=https://api.openai.com/v1 pnpm run deploy:cf
 ```
 
 PowerShell 示例：
 
 ```powershell
-$env:VITE_DEFAULT_API_URL="https://api.openai.com/v1"; npm run deploy:cf
+$env:VITE_DEFAULT_API_URL="https://api.openai.com/v1"; pnpm run deploy:cf
 ```
 
 **携带默认配置参数**：`VITE_DEFAULT_API_URL` 支持通过 URL 查询参数预设默认配置，可用参数参考下方的：“URL 传参快速填充”：`apiUrl`、`apiKey`、`apiMode`、`model`、`profileName`、`codexCli`、`streamImages`、`streamPartialImages`。
@@ -338,8 +333,8 @@ services:
 **仅展示默认配置**：在 `.env.local` 中加入 `VITE_SHOW_DEFAULT_CONFIG_ONLY=true` 后，如果已配置默认 API URL 或默认代理，前端会禁用“当前配置”和“服务商类型”的下拉切换。通过页面 URL 参数传入的配置只会覆盖当前配置字段，不会新建配置、切换服务商类型或导入自定义服务商；`VITE_DEFAULT_API_URL` 本身仍可使用配置 URL 来定义部署端默认服务商。
 
 ```bash
-npm install
-npm run dev
+pnpm install
+pnpm run dev
 ```
 
 **2. 本地开发跨域代理 (可选)**
@@ -350,14 +345,14 @@ npm run dev
 cp dev-proxy.config.example.json dev-proxy.config.json
 ```
 
-修改 `dev-proxy.config.json`，将 `target` 设置为真实的完整 API 基础地址。代理不会自动补 `/v1`，OpenAI 兼容接口通常必须填写到版本前缀，如 `https://api.example.com/v1`。重启开发服务器后，在页面设置中开启 **API 代理** 即可（请求将被转发如 `http://localhost:5173/api-proxy/... -> target/...`）。此功能仅在 `npm run dev` 阶段生效，不会影响打包产物。
+修改 `dev-proxy.config.json`，将 `target` 设置为真实的完整 API 基础地址。代理不会自动补 `/v1`，OpenAI 兼容接口通常必须填写到版本前缀，如 `https://api.example.com/v1`。重启开发服务器后，在页面设置中开启 **API 代理** 即可（请求将被转发如 `http://localhost:5173/api-proxy/... -> target/...`）。此功能仅在 `pnpm run dev` 阶段生效，不会影响打包产物。
 
 **3. 本地故障模拟 API (可选)**
 
 如果需要复现图片 URL 跨域、接口返回结构异常、原始响应查看等问题，可启动内置模拟服务：
 
 ```powershell
-npm run mock:api
+pnpm run mock:api
 ```
 
 使用方式见 [本地故障模拟 API](docs/mock-image-api.md)。
@@ -365,7 +360,7 @@ npm run mock:api
 **4. 构建静态产物**
 
 ```bash
-npm run build
+pnpm run build
 ```
 
 构建输出的文件位于 `dist/` 目录下，可将其部署至任何静态文件服务器（如普通 Nginx、GitHub Pages、Netlify 等）。

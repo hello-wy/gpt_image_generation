@@ -7,6 +7,7 @@ import { DEFAULT_FAL_IMAGE_SIZE, getChangedParams, getOutputImageLimitForSetting
 import { getAtImageQuery, getImageMentionLabel, getPromptIndexFromVisibleIndex, getPromptMentionParts, getSelectedImageMentionLabel, getSelectedTextMentionLabel, imageMentionMatches, insertImageMentionAtVisibleRange, insertTextMentionAtVisibleRange, isCursorInSelectedImageMention, stripImageMentionMarkers } from '../lib/promptImageMentions'
 import { normalizeImageSize } from '../lib/size'
 import { createMaskPreviewDataUrl } from '../lib/canvasImage'
+import { shouldIgnorePromptKeyDownDuringComposition } from '../lib/compositionEvent'
 import { getSafeBoundingClientRect } from '../lib/domRect'
 import { collectAgentRoundOutputImageSlots } from '../lib/agentImageReferences'
 import { useHintTooltip } from '../hooks/useHintTooltip'
@@ -649,6 +650,7 @@ export default function InputBar() {
   const suppressImageClickRef = useRef(false)
   const replaceImageTargetRef = useRef<{ index: number; id: string } | null>(null)
   const isUserInputRef = useRef(false)
+  const isComposingRef = useRef(false)
   const imageHintLockedRef = useRef(false)
   const imageHintReleaseRef = useRef<(() => void) | null>(null)
   const [cursorPos, setCursorPos] = useState(0)
@@ -1233,6 +1235,10 @@ export default function InputBar() {
   }
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
+    if (shouldIgnorePromptKeyDownDuringComposition(isComposingRef.current, e.nativeEvent.isComposing, e.keyCode)) {
+      return
+    }
+
     if (showAtImageMenu) {
       if (e.key === 'ArrowDown') {
         e.preventDefault()
@@ -2065,6 +2071,7 @@ export default function InputBar() {
               contentEditable
               suppressContentEditableWarning
               onInput={(e) => {
+                if (isComposingRef.current) return
                 isUserInputRef.current = true
                 const el = e.currentTarget
                 const range = getContentEditableSelection(el)
@@ -2072,6 +2079,15 @@ export default function InputBar() {
                 syncMentionTagSelection(el)
                 const text = getContentEditablePlainText(el)
                 setPrompt(text)
+                setAtImageMenuIndex(0)
+                setAtImageMenuDismissed(false)
+              }}
+              onCompositionStart={() => {
+                isComposingRef.current = true
+              }}
+              onCompositionEnd={() => {
+                isComposingRef.current = false
+                syncPromptFromContentEditable()
                 setAtImageMenuIndex(0)
                 setAtImageMenuDismissed(false)
               }}

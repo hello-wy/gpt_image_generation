@@ -1,0 +1,8 @@
+allowBuilds:
+  core-js: true
+  esbuild: true
+  sharp: true
+  workerd: true
+overrides:
+  mdast-util-gfm-autolink-literal: 2.0.0
+  dompurify: ^3.4.7

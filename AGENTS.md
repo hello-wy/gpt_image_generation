@@ -6,17 +6,17 @@
 
 - React 19 + Vite + TypeScript 前端应用，使用 Zustand 状态管理、Tailwind CSS 样式。
 - 源码在 `src/`，构建产物由 Vite 生成，不要手动编辑 `dist/`。
-- 包管理器为 npm（有 `package-lock.json`），不要使用 yarn 或 pnpm。
+- 包管理器为 pnpm（有 `pnpm-lock.yaml`），不要改用其他包管理工具。
 
 ## 常用命令
 
 | 操作 | 命令 |
 |------|------|
-| 安装依赖 | `npm install` |
-| 开发服务器 | `npm run dev` |
-| 构建 | `npm run build` |
-| 运行测试 | `npm test` |
-| 监听测试 | `npm run test:watch` |
+| 安装依赖 | `pnpm install` |
+| 开发服务器 | `pnpm run dev` |
+| 构建 | `pnpm run build` |
+| 运行测试 | `pnpm test` |
+| 监听测试 | `pnpm run test:watch` |
 
 - 测试使用 Vitest，已有多个 `*.test.ts` 文件。
 - 不要新增 lint/formatter 配置文件，除非明确要求。
@@ -167,4 +167,4 @@ else params = baseParams
   - 新增 state 字段时，考虑是否需要持久化以及升级路径。
 - `src/lib/apiProfiles.ts` 包含多供应商配置，修改时注意向后兼容。
 - `src/lib/db.ts` 是 IndexedDB 封装层，修改 schema 时需升级 `DB_VERSION` 并处理 `onupgradeneeded`。
-- 修改完成后优先运行 `npm run build` 验证编译，再运行 `npm test` 验证测试。
+- 修改完成后优先运行 `pnpm run build` 验证编译，再运行 `pnpm test` 验证测试。
