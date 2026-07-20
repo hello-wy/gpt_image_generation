@@ -1,0 +1,31 @@
+name: gpt-image-playground
+
+services:
+  gpt-image-playground:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    image: gpt-image-playground:netcup
+    container_name: gpt-image-playground
+    restart: unless-stopped
+    ports:
+      - '127.0.0.1:18081:80'
+    environment:
+      DEFAULT_API_URL: ''
+      API_PROXY_URL: http://sub2api:8080/v1
+      ENABLE_API_PROXY: 'true'
+      LOCK_API_PROXY: 'true'
+    networks:
+      - default
+      - sub2api-network
+    healthcheck:
+      test: ['CMD', 'wget', '--no-verbose', '--tries=1', '--spider', 'http://127.0.0.1/']
+      interval: 30s
+      timeout: 3s
+      retries: 3
+      start_period: 10s
+
+networks:
+  sub2api-network:
+    external: true
+    name: deploy_sub2api-network

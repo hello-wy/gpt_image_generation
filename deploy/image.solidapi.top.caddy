@@ -1,0 +1,4 @@
+image.solidapi.top {
+	reverse_proxy 127.0.0.1:18081
+	encode zstd gzip
+}
